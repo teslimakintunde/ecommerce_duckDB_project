@@ -1,3 +1,4 @@
+pendulum<3.0.0
 dlt[duckdb]
 dbt-duckdb
 duckdb
