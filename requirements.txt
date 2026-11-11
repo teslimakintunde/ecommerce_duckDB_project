@@ -1,0 +1,6 @@
+dlt[duckdb]
+dbt-duckdb
+duckdb
+psycopg2-binary
+sqlalchemy
+pandas

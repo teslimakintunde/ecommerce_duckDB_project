@@ -1,0 +1,11 @@
+.env
+__pycache__/
+*.db
+*.db.wal
+*.csv
+airflow/logs/
+airflow/plugins/
+dbt_project/target/
+dbt_project/dbt_packages/
+.venv/
+venv/

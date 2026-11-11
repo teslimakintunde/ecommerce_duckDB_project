@@ -1,0 +1,55 @@
+x-airflow-common: &airflow-common
+  build: .
+  environment:
+    - AIRFLOW__CORE__LOAD_EXAMPLES=False
+    - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+    - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
+    - AIRFLOW__CORE__FERNET_KEY=fbVk1_f3A95_Uu6B8H8w3Lz31_VbZ_J31337=
+    - PG_HOST=${PG_HOST}
+    - PG_PORT=${PG_PORT}
+    - PG_USER=${PG_USER}
+    - PG_PASSWORD=${PG_PASSWORD}
+    - PG_DATABASE=${PG_DATABASE}
+    - DUCKDB_PATH=${DUCKDB_PATH}
+  volumes:
+    - ./airflow/dags:/opt/airflow/dags
+    - ./airflow/logs:/opt/airflow/logs
+    - ./airflow/plugins:/opt/airflow/plugins
+    - ./dlt_pipeline:/opt/airflow/dlt_pipeline
+    - ./dbt_project:/opt/airflow/dbt_project
+    - ./data:/opt/airflow/data
+ 
+  # user: "0:0"
+  depends_on:
+    postgres:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_USER=airflow
+      - POSTGRES_PASSWORD=airflow
+      - POSTGRES_DB=airflow
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  webserver:
+    <<: *airflow-common
+    command: webserver
+    ports:
+      - "8080:8080"
+    restart: always
+
+  scheduler:
+    <<: *airflow-common
+    command: scheduler
+    restart: always
+
+volumes:
+  postgres_data:
