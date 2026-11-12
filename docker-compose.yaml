@@ -44,6 +44,7 @@ services:
     command: webserver
     ports:
       - "8085:8080"
+      - "8086:8086"
     restart: always
 
   scheduler:

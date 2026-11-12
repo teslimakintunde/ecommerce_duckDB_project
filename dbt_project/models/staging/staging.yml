@@ -1,0 +1,61 @@
+version: 2
+
+models:
+  - name: stg_sales
+    data_tests:
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "not (invalid_order_date or invalid_estimated_delivery or invalid_actual_delivery)"
+          config: {severity: warn}
+    columns:
+      - name: line_item_id
+        data_tests: [not_null, unique]
+      - name: order_id
+        data_tests: [not_null]
+      - name: customer_id
+        data_tests:
+          - relationships:
+              arguments: {to: ref('stg_customers'), field: customer_id}
+              config: {severity: warn}
+      - name: product_id
+        data_tests:
+          - relationships:
+              arguments: {to: ref('stg_products'), field: product_id}
+              config: {severity: warn}
+      - name: delivery_status
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [Delivered, Delayed, Cancelled, Pending, Processing, Unknown]
+              config: {severity: warn}
+      - name: payment_method
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [PayPal, Credit Card, Debit Card, Bank Transfer, USSD, Cash, Unknown]
+              config: {severity: warn}
+      - name: quantity
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments: {min_value: 1}
+              config: {severity: warn}
+      - name: discount_applied
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments: {min_value: 0, max_value: 1}
+              config: {severity: warn}
+
+  - name: stg_products
+    columns:
+      - name: product_id
+        data_tests: [not_null, unique]
+
+  - name: stg_customers
+    columns:
+      - name: customer_id
+        data_tests: [not_null, unique]
+      - name: loyalty_tier
+        data_tests:
+          - accepted_values:
+              arguments: {values: [Bronze, Silver, Gold, Platinum, Unknown]}
+              config: {severity: warn}

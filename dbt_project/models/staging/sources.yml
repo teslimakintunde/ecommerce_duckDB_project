@@ -1,0 +1,8 @@
+version: 2
+sources:
+  - name: raw
+    schema: raw_data
+    tables:
+      - name: sales_data_raw
+      - name: customers_raw
+      - name: products_raw
