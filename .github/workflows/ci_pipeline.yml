@@ -1,0 +1,158 @@
+name: Data Pipeline CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read            # least privilege: CI only needs to read the repo
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true  # a newer push cancels the older run
+
+env:
+  PYTHON_VERSION: "3.10"    # same as the apache/airflow:2.7.2-python3.10 image
+
+jobs:
+  # ------------------------------------------------------------------ 1
+  lint:
+    name: Lint and repo hygiene
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Block committed secrets and warehouse files
+        run: |
+          bad=$(git ls-files | grep -E '(^|/)\.env$|secrets\.toml$|\.duckdb$|\.duckdb\.wal$|\.db$' || true)
+          if [ -n "$bad" ]; then
+            echo "::error::These files must never be committed:"
+            echo "$bad"
+            exit 1
+          fi
+
+      - name: Ruff lint
+        run: |
+          pip install ruff
+          ruff check .
+
+  # ------------------------------------------------------------------ 2
+  test-pipeline:
+    name: Python tests and dbt build on seeded DuckDB
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      DUCKDB_PATH: /tmp/ci_warehouse.duckdb
+      DBT_PROFILES_DIR: ${{ github.workspace }}/dbt_project
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pytest
+
+      - name: Python unit tests
+        run: pytest tests -q
+
+      - name: dbt deps and parse
+        run: |
+          dbt deps  --project-dir dbt_project
+          dbt parse --project-dir dbt_project
+
+      - name: Seed tiny raw tables (same shape dlt produces)
+        run: python ci/ci_helpers.py seed
+
+      - name: dbt build, run 1 (full build)
+        run: dbt build --project-dir dbt_project
+
+      - name: dbt build, run 2 (incremental, nothing changed)
+        run: dbt build --project-dir dbt_project
+
+      - name: Simulate a source change (one line item updated)
+        run: python ci/ci_helpers.py change
+
+      - name: dbt build, run 3 (must pick up only the changed line)
+        run: dbt build --project-dir dbt_project
+
+      - name: Assert business results and incremental behaviour
+        run: python ci/ci_helpers.py check
+
+      - name: Generate dbt docs and lineage
+        run: dbt docs generate --project-dir dbt_project
+
+      - name: Summarise dbt results
+        if: always()
+        run: |
+          python - <<'EOF' >> "$GITHUB_STEP_SUMMARY"
+          import collections, json, pathlib
+          p = pathlib.Path("dbt_project/target/run_results.json")
+          if p.exists():
+              c = collections.Counter(r["status"] for r in json.loads(p.read_text())["results"])
+              print("### dbt results (last build)")
+              for k, v in c.items():
+                  print(f"- {k}: {v}")
+          EOF
+
+      - name: Upload dbt artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dbt-artifacts
+          retention-days: 14
+          path: |
+            dbt_project/target/manifest.json
+            dbt_project/target/run_results.json
+            dbt_project/target/catalog.json
+            dbt_project/target/index.html
+
+  # ------------------------------------------------------------------ 3
+  airflow-dags:
+    name: Airflow DAGs import in the real image
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build the project's Airflow image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: ecommerce-airflow:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Load every DAG and check structure
+        run: |
+          docker run --rm \
+            -v "$PWD/airflow/dags:/opt/airflow/dags" \
+            -e DUCKDB_PATH=/tmp/ci.db \
+            ecommerce-airflow:ci python -c "
+          from airflow.models import DagBag
+          bag = DagBag('/opt/airflow/dags', include_examples=False)
+          assert not bag.import_errors, bag.import_errors
+          dag = bag.dags['ecommerce_elt_pipeline']
+          needed = {'ingest_postgres_to_duckdb', 'validate_raw_data', 'dbt_deps',
+                    'dbt_build', 'validate_marts', 'end_pipeline'}
+          missing = needed - set(dag.task_ids)
+          assert not missing, f'missing tasks: {missing}'
+          assert dag.max_active_runs == 1, 'DuckDB is single-writer'
+          print('DAG OK:', sorted(dag.task_ids))
+          "
