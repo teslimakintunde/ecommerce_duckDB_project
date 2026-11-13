@@ -1,4 +1,4 @@
-"""E-commerce ELT: PostgreSQL -> dlt -> DuckDB ->."""
+"""E-commerce End-to-End ELT: PostgreSQL -> dlt -> DuckDB -> dbt."""
 import logging
 import os
 from datetime import timedelta
@@ -15,7 +15,6 @@ DUCKDB_PATH = os.getenv(
     "DUCKDB_PATH", "/opt/airflow/data/warehouse/ecommerce_warehouse.db"
 )
 
-# Map each raw table to its primary key column(s)
 RAW_TABLES = {
     "customers_raw": ["customer_id"],
     "products_raw": ["product_id"],
@@ -24,7 +23,7 @@ RAW_TABLES = {
 
 
 def notify_failure(context):
-    """Runs when a task finally fails (after all retries). Hook for Slack/email later."""
+    """Runs when a task finally fails after all retries."""
     ti = context["task_instance"]
     log.error(
         "PIPELINE FAILURE | dag=%s task=%s run=%s try=%s | log=%s",
@@ -39,31 +38,33 @@ default_args = {
     "retry_delay": timedelta(minutes=2),
     "retry_exponential_backoff": True,
     "max_retry_delay": timedelta(minutes=10),
-    "execution_timeout": timedelta(minutes=15),
+    "execution_timeout": timedelta(minutes=20),
     "on_failure_callback": notify_failure,
 }
 
 
 @dag(
     dag_id="ecommerce_elt_pipeline",
-    description="Incremental ELT: PostgreSQL -> dlt -> DuckDB -> dbt",
+    description="End-to-End Incremental ELT: PostgreSQL -> dlt -> DuckDB -> dbt",
     default_args=default_args,
     schedule="0 2 * * *",
     start_date=pendulum.datetime(2026, 1, 1, tz="Africa/Lagos"),
     catchup=False,
-    max_active_runs=1,
+    max_active_runs=1,  # DuckDB is single-writer: prevents concurrent lock errors
     dagrun_timeout=timedelta(hours=1),
-    tags=["ecommerce", "dlt", "duckdb", "dbt"],
+    tags=["ecommerce", "dlt", "duckdb", "dbt", "production"],
     doc_md=__doc__,
 )
 def ecommerce_elt_pipeline():
     start = EmptyOperator(task_id="start_pipeline")
 
+    # 1. Incremental extraction & MERGE load via dlt
     ingest = BashOperator(
         task_id="ingest_postgres_to_duckdb",
         bash_command="cd /opt/airflow && python dlt_pipeline/extract_load.py",
     )
 
+    # 2. Raw data quality gate before running transformations
     @task(retries=0)
     def validate_raw_data() -> dict:
         import duckdb
@@ -94,9 +95,30 @@ def ecommerce_elt_pipeline():
             con.close()
         return counts
 
+    # 3. Build dbt staging, intermediate & incremental mart models
+    dbt_run = BashOperator(
+        task_id="dbt_run_models",
+        bash_command=(
+            "dbt run "
+            "--project-dir /opt/airflow/dbt_project "
+            "--profiles-dir /opt/airflow/dbt_project"
+        ),
+    )
+
+    # 4. Run dbt data quality tests
+    dbt_test = BashOperator(
+        task_id="dbt_test_models",
+        bash_command=(
+            "dbt test "
+            "--project-dir /opt/airflow/dbt_project "
+            "--profiles-dir /opt/airflow/dbt_project"
+        ),
+    )
+
     end = EmptyOperator(task_id="end_pipeline")
 
-    start >> ingest >> validate_raw_data() >> end
+    # End-to-End Dependency Lineage
+    start >> ingest >> validate_raw_data() >> dbt_run >> dbt_test >> end
 
 
 ecommerce_elt_pipeline()
