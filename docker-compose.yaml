@@ -1,16 +1,13 @@
 x-airflow-common: &airflow-common
   build: .
+  env_file: .env              # passes PG_*, DUCKDB_PATH and the keys below in one go
   environment:
     - AIRFLOW__CORE__LOAD_EXAMPLES=False
     - AIRFLOW__CORE__EXECUTOR=LocalExecutor
     - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
-    - AIRFLOW__CORE__FERNET_KEY=fbVk1_f3A95_Uu6B8H8w3Lz31_VbZ_J31337=
-    - PG_HOST=${PG_HOST}
-    - PG_PORT=${PG_PORT}
-    - PG_USER=${PG_USER}
-    - PG_PASSWORD=${PG_PASSWORD}
-    - PG_DATABASE=${PG_DATABASE}
-    - DUCKDB_PATH=${DUCKDB_PATH}
+    - AIRFLOW__CORE__FERNET_KEY=${AIRFLOW_FERNET_KEY}
+    - AIRFLOW__WEBSERVER__SECRET_KEY=${AIRFLOW_SECRET_KEY}
+    - DBT_PROFILES_DIR=/opt/airflow/dbt_project
   volumes:
     - ./airflow/dags:/opt/airflow/dags
     - ./airflow/logs:/opt/airflow/logs
@@ -18,8 +15,6 @@ x-airflow-common: &airflow-common
     - ./dlt_pipeline:/opt/airflow/dlt_pipeline
     - ./dbt_project:/opt/airflow/dbt_project
     - ./data:/opt/airflow/data
- 
-  # user: "0:0"
   depends_on:
     postgres:
       condition: service_healthy
@@ -43,8 +38,7 @@ services:
     <<: *airflow-common
     command: webserver
     ports:
-      - "8085:8080"
-      - "8086:8086"
+      - "8085:8080"           
     restart: always
 
   scheduler:
