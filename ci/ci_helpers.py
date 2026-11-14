@@ -166,9 +166,22 @@ def check():
                  "where line_item_id = 'OL4'")
     expect("changed row OL4 shows new status", status == "Delivered", str(status))
 
-    latest = one("select count(*) from marts.fct_sales_profitability "
-                 "where dbt_loaded_at = (select max(dbt_loaded_at) from marts.fct_sales_profitability)")
-    expect("only ONE line reprocessed in run 3", latest == 1, f"rows at newest load = {latest}")
+       newest = {
+        r[0] for r in con.execute(
+            "select line_item_id from marts.fct_sales_profitability "
+            "where dbt_loaded_at = (select max(dbt_loaded_at) from marts.fct_sales_profitability)"
+        ).fetchall()
+    }
+    expect("run 3 reprocessed the changed line plus only the lag-window overlap",
+           newest == {"OL3", "OL4"}, f"reprocessed = {sorted(newest)}")
+
+    untouched = one(
+        "select count(*) from marts.fct_sales_profitability "
+        "where line_item_id in ('OL1', 'OL2', 'OL5') "
+        "and dbt_loaded_at < (select dbt_loaded_at from marts.fct_sales_profitability "
+        "where line_item_id = 'OL4')"
+    )
+    expect("old lines OL1, OL2 and OL5 were NOT reprocessed", untouched == 3, f"untouched = {untouched}")
 
     rev_int = float(one("select sum(recognized_revenue) from intermediate.int_sales_enriched"))
     rev_fct = float(one("select sum(recognized_revenue) from marts.fct_sales_profitability"))
